@@ -1,0 +1,11 @@
+{
+    "mapId":1,
+    "mapName":"시작의 마을",
+    "width":100.0,
+    "height":100.0,
+    "depth":100.0,
+    "spawnPoints":[],
+    "monsterSpawns":[],
+    "staticObjects":[],
+    "obstacles":[]
+}

@@ -1,0 +1,62 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{7734D3A5-C797-42F3-9813-FF6EC17ECE5E}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NetGameServer.Common", "src\NetGameServer.Common\NetGameServer.Common.csproj", "{51BFF4E2-66E4-498B-BCFD-374040AB345C}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NetGameServer.Network", "src\NetGameServer.Network\NetGameServer.Network.csproj", "{F7CD3447-0FFA-47DD-A434-4D619FD82C10}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NetGameServer.Auth", "src\NetGameServer.Auth\NetGameServer.Auth.csproj", "{40A04FBB-20F7-4A6F-9668-52644FB16DC2}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NetGameServer.Game", "src\NetGameServer.Game\NetGameServer.Game.csproj", "{F2072D60-E05F-4C8B-A912-C4C867A45C20}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NetGameServer", "src\NetGameServer\NetGameServer.csproj", "{776E42E9-28FE-4FAC-B45A-8E197B0A1B9F}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NetGameServer.TestClient", "src\NetGameServer.TestClient\NetGameServer.TestClient.csproj", "{23D6253B-1961-4CED-9808-DCD7FA54F45B}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{51BFF4E2-66E4-498B-BCFD-374040AB345C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{51BFF4E2-66E4-498B-BCFD-374040AB345C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{51BFF4E2-66E4-498B-BCFD-374040AB345C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{51BFF4E2-66E4-498B-BCFD-374040AB345C}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F7CD3447-0FFA-47DD-A434-4D619FD82C10}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F7CD3447-0FFA-47DD-A434-4D619FD82C10}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F7CD3447-0FFA-47DD-A434-4D619FD82C10}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F7CD3447-0FFA-47DD-A434-4D619FD82C10}.Release|Any CPU.Build.0 = Release|Any CPU
+		{40A04FBB-20F7-4A6F-9668-52644FB16DC2}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{40A04FBB-20F7-4A6F-9668-52644FB16DC2}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{40A04FBB-20F7-4A6F-9668-52644FB16DC2}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{40A04FBB-20F7-4A6F-9668-52644FB16DC2}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F2072D60-E05F-4C8B-A912-C4C867A45C20}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F2072D60-E05F-4C8B-A912-C4C867A45C20}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F2072D60-E05F-4C8B-A912-C4C867A45C20}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F2072D60-E05F-4C8B-A912-C4C867A45C20}.Release|Any CPU.Build.0 = Release|Any CPU
+		{776E42E9-28FE-4FAC-B45A-8E197B0A1B9F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{776E42E9-28FE-4FAC-B45A-8E197B0A1B9F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{776E42E9-28FE-4FAC-B45A-8E197B0A1B9F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{776E42E9-28FE-4FAC-B45A-8E197B0A1B9F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{23D6253B-1961-4CED-9808-DCD7FA54F45B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{23D6253B-1961-4CED-9808-DCD7FA54F45B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{23D6253B-1961-4CED-9808-DCD7FA54F45B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{23D6253B-1961-4CED-9808-DCD7FA54F45B}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{51BFF4E2-66E4-498B-BCFD-374040AB345C} = {7734D3A5-C797-42F3-9813-FF6EC17ECE5E}
+		{F7CD3447-0FFA-47DD-A434-4D619FD82C10} = {7734D3A5-C797-42F3-9813-FF6EC17ECE5E}
+		{40A04FBB-20F7-4A6F-9668-52644FB16DC2} = {7734D3A5-C797-42F3-9813-FF6EC17ECE5E}
+		{F2072D60-E05F-4C8B-A912-C4C867A45C20} = {7734D3A5-C797-42F3-9813-FF6EC17ECE5E}
+		{776E42E9-28FE-4FAC-B45A-8E197B0A1B9F} = {7734D3A5-C797-42F3-9813-FF6EC17ECE5E}
+		{23D6253B-1961-4CED-9808-DCD7FA54F45B} = {7734D3A5-C797-42F3-9813-FF6EC17ECE5E}
+	EndGlobalSection
+EndGlobal
