@@ -1,7 +1,7 @@
 using System.Threading.Channels;
 using NetGameServer.Common.Packets;
-
 using NetGameServer.Network.Sessions;
+using Serilog;
 
 namespace NetGameServer.Network.Processing;
 
@@ -81,8 +81,7 @@ public class PacketProcessor : IDisposable
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine($"워커 {workerId} 패킷 처리 오류: {ex.Message}");
-                        Console.WriteLine(ex.StackTrace);
+                        Log.Error(ex, "워커 {WorkerId} 패킷 처리 오류: {Message}", workerId, ex.Message);
                     }
                 }
             }
@@ -92,7 +91,7 @@ public class PacketProcessor : IDisposable
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"워커 {workerId} 오류: {ex.Message}");
+            Log.Error(ex, "워커 {WorkerId} 오류: {Message}", workerId, ex.Message);
         }
     }
     

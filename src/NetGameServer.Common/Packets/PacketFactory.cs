@@ -14,6 +14,8 @@ public static class PacketFactory
         {
             PacketType.LoginRequest => new LoginRequestPacket(),
             PacketType.LoginResponse => new LoginResponsePacket(),
+            PacketType.ReconnectRequest => new ReconnectRequestPacket(),
+            PacketType.ReconnectResponse => new ReconnectResponsePacket(),
             PacketType.MoveRequest => new MoveRequestPacket(),
             PacketType.ObjectSpawn => new ObjectSpawnPacket(),
             PacketType.ObjectDespawn => new ObjectDespawnPacket(),

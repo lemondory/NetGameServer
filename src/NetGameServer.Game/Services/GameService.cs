@@ -22,6 +22,13 @@ public class GameService : IGameService
     private readonly IAuthService _authService;
     private readonly ConcurrentDictionary<string, Character> _sessionToCharacter = new();
     private readonly ConcurrentDictionary<string, IClientSession> _sessions = new();
+    // 토큰 -> 세션ID 매핑 (재연결용)
+    private readonly ConcurrentDictionary<string, string> _tokenToSession = new();
+    // 사용자명 -> 세션ID 매핑 (재연결용 - 토큰이 만료된 경우 대비)
+    private readonly ConcurrentDictionary<string, string> _usernameToSession = new();
+    // 연결 해제된 캐릭터 (재연결 대기용) - 세션ID -> (캐릭터, 연결 해제 시간)
+    private readonly ConcurrentDictionary<string, (Character character, DateTime disconnectedAt)> _disconnectedCharacters = new();
+    private readonly TimeSpan _reconnectTimeout = TimeSpan.FromSeconds(30); // 재연결 대기 시간
     
     // 기본 맵 (예시)
     private GameMap? _defaultMap;
@@ -35,6 +42,55 @@ public class GameService : IGameService
         _authService = authService ?? throw new ArgumentNullException(nameof(authService));
         _gameWorld = new GameWorld();
         InitializeMaps();
+        
+        // 재연결 대기 중인 캐릭터 정리 작업 시작
+        _ = Task.Run(CleanupDisconnectedCharactersAsync);
+    }
+    
+    /// <summary>
+    /// 재연결 대기 시간이 지난 캐릭터 정리
+    /// </summary>
+    private async Task CleanupDisconnectedCharactersAsync()
+    {
+        while (true)
+        {
+            try
+            {
+                await Task.Delay(5000); // 5초마다 체크
+                
+                var now = DateTime.UtcNow;
+                var toRemove = new List<string>();
+                
+                foreach (var kvp in _disconnectedCharacters)
+                {
+                    if (now - kvp.Value.disconnectedAt > _reconnectTimeout)
+                    {
+                        toRemove.Add(kvp.Key);
+                    }
+                }
+                
+                foreach (var sessionId in toRemove)
+                {
+                    if (_disconnectedCharacters.TryRemove(sessionId, out var disconnected))
+                    {
+                        // 캐릭터 완전히 제거
+                        if (_defaultMap != null)
+                        {
+                            await NotifyObjectDespawnAsync(disconnected.character.ObjectId);
+                            _defaultMap.RemoveObject(disconnected.character.ObjectId);
+                            GameObjectPools.ReturnCharacter(disconnected.character);
+                        }
+                        
+                        Log.Information("[서버] 재연결 타임아웃으로 캐릭터 제거: 세션 {SessionId}, 캐릭터 ID: {CharacterId}",
+                            sessionId, disconnected.character.ObjectId);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "재연결 대기 캐릭터 정리 중 오류 발생");
+            }
+        }
     }
     
     private void InitializeMaps()
@@ -225,7 +281,7 @@ public class GameService : IGameService
     }
     
     /// <summary>
-    /// 게임 종료 - 캐릭터 제거
+    /// 게임 종료 - 캐릭터를 재연결 대기 상태로 전환 (즉시 제거하지 않음)
     /// </summary>
     public async Task EndGameAsync(IClientSession session)
     {
@@ -233,15 +289,19 @@ public class GameService : IGameService
         {
             if (_defaultMap != null)
             {
-                // 다른 클라이언트에게 제거 알림
-                await NotifyObjectDespawnAsync(character.ObjectId);
-                
-                _defaultMap.RemoveObject(character.ObjectId);
+                // Interest Area만 제거 (캐릭터는 맵에 유지)
                 _defaultMap.InterestManager.RemoveInterestArea(session.SessionId);
+                
+                // 다른 클라이언트에게는 제거 알림 (재연결 시 다시 스폰 알림)
+                await NotifyObjectDespawnAsync(character.ObjectId);
             }
             _sessions.TryRemove(session.SessionId, out _);
-            Log.Information("[서버] 게임 종료: 세션 {SessionId}, 캐릭터 ID: {CharacterId}",
-                session.SessionId, character.ObjectId);
+            
+            // 재연결 대기 목록에 추가 (타임아웃 후 자동 제거)
+            _disconnectedCharacters.TryAdd(session.SessionId, (character, DateTime.UtcNow));
+            
+            Log.Information("[서버] 게임 종료 (재연결 대기): 세션 {SessionId}, 캐릭터 ID: {CharacterId}, 타임아웃: {Timeout}초",
+                session.SessionId, character.ObjectId, _reconnectTimeout.TotalSeconds);
         }
         
         await Task.CompletedTask;
@@ -484,6 +544,10 @@ public class GameService : IGameService
                     HandleLoginRequest(context);
                     break;
                     
+                case ReconnectRequestPacket reconnectRequest:
+                    HandleReconnectRequest(context, reconnectRequest);
+                    break;
+                    
                 case MoveRequestPacket moveRequest:
                     HandleMoveRequest(context, moveRequest);
                     break;
@@ -533,11 +597,194 @@ public class GameService : IGameService
         Log.Information("로그인 응답 전송 완료: {SessionId}, Success: {Success}, Message: {Message}",
             context.Session.SessionId, response.Success, response.Message);
         
-        // 로그인 성공 시 게임 시작
-        if (response.Success)
+        // 로그인 성공 시 토큰-세션 매핑 저장 및 게임 시작
+        if (response.Success && !string.IsNullOrEmpty(response.Token))
         {
+            // 토큰 -> 세션ID 매핑 저장
+            _tokenToSession.TryAdd(response.Token, context.Session.SessionId);
+            // 사용자명 -> 세션ID 매핑 저장 (토큰 만료 대비)
+            _usernameToSession.TryAdd(loginRequest.Username, context.Session.SessionId);
+            
+            Log.Debug("토큰-세션 매핑 저장: Token={TokenPrefix}..., SessionId={SessionId}, Username={Username}",
+                response.Token.Substring(0, Math.Min(8, response.Token.Length)), 
+                context.Session.SessionId, loginRequest.Username);
+            
             await StartGameAsync(context.Session);
         }
+    }
+    
+    private async void HandleReconnectRequest(PacketContext context, ReconnectRequestPacket reconnectRequest)
+    {
+        Log.Information("재연결 요청 처리: {SessionId}, Username: {Username}, Token: {Token}",
+            context.Session.SessionId, reconnectRequest.Username, 
+            string.IsNullOrEmpty(reconnectRequest.Token) ? "없음" : reconnectRequest.Token.Substring(0, Math.Min(8, reconnectRequest.Token.Length)) + "...");
+        
+        var response = new ReconnectResponsePacket
+        {
+            Success = false,
+            Message = "재연결 실패"
+        };
+        
+        string? oldSessionId = null;
+        Character? existingCharacter = null;
+        
+        // 1. 토큰 검증 및 이전 세션 찾기
+        if (!string.IsNullOrEmpty(reconnectRequest.Token))
+        {
+            // 토큰 유효성 검증
+            var isTokenValid = await _authService.ValidateTokenAsync(reconnectRequest.Token);
+            
+            if (isTokenValid)
+            {
+                // 토큰으로 이전 세션ID 찾기
+                if (_tokenToSession.TryGetValue(reconnectRequest.Token, out oldSessionId))
+                {
+                    Log.Debug("토큰으로 이전 세션 찾음: Token={TokenPrefix}..., OldSessionId={OldSessionId}",
+                        reconnectRequest.Token.Substring(0, Math.Min(8, reconnectRequest.Token.Length)), oldSessionId);
+                    
+                    // 이전 세션의 캐릭터 찾기
+                    if (_sessionToCharacter.TryGetValue(oldSessionId, out existingCharacter))
+                    {
+                        Log.Debug("이전 세션의 캐릭터 찾음: OldSessionId={OldSessionId}, CharacterId={CharacterId}",
+                            oldSessionId, existingCharacter.ObjectId);
+                    }
+                    else
+                    {
+                        Log.Warning("이전 세션의 캐릭터를 찾을 수 없음: OldSessionId={OldSessionId}", oldSessionId);
+                    }
+                }
+                else
+                {
+                    Log.Warning("토큰으로 이전 세션을 찾을 수 없음: Token={TokenPrefix}...",
+                        reconnectRequest.Token.Substring(0, Math.Min(8, reconnectRequest.Token.Length)));
+                }
+            }
+            else
+            {
+                Log.Warning("토큰이 유효하지 않음: Token={TokenPrefix}...",
+                    reconnectRequest.Token.Substring(0, Math.Min(8, reconnectRequest.Token.Length)));
+            }
+        }
+        
+        // 2. 토큰으로 찾지 못했으면 사용자명으로 시도
+        if (existingCharacter == null && !string.IsNullOrEmpty(reconnectRequest.Username))
+        {
+            if (_usernameToSession.TryGetValue(reconnectRequest.Username, out oldSessionId))
+            {
+                Log.Debug("사용자명으로 이전 세션 찾음: Username={Username}, OldSessionId={OldSessionId}",
+                    reconnectRequest.Username, oldSessionId);
+                
+                // 활성 세션에서 찾기
+                if (_sessionToCharacter.TryGetValue(oldSessionId, out existingCharacter))
+                {
+                    Log.Debug("이전 세션의 캐릭터 찾음 (활성): OldSessionId={OldSessionId}, CharacterId={CharacterId}",
+                        oldSessionId, existingCharacter.ObjectId);
+                }
+                // 재연결 대기 목록에서 찾기
+                else if (_disconnectedCharacters.TryGetValue(oldSessionId, out var disconnected))
+                {
+                    existingCharacter = disconnected.character;
+                    Log.Debug("이전 세션의 캐릭터 찾음 (재연결 대기): OldSessionId={OldSessionId}, CharacterId={CharacterId}",
+                        oldSessionId, existingCharacter.ObjectId);
+                }
+            }
+        }
+        
+        // 3. 재연결 대기 목록에서 직접 찾기 (토큰/사용자명으로 찾지 못한 경우)
+        if (existingCharacter == null && !string.IsNullOrEmpty(oldSessionId))
+        {
+            if (_disconnectedCharacters.TryGetValue(oldSessionId, out var disconnected))
+            {
+                existingCharacter = disconnected.character;
+                Log.Debug("재연결 대기 목록에서 캐릭터 찾음: OldSessionId={OldSessionId}, CharacterId={CharacterId}",
+                    oldSessionId, existingCharacter.ObjectId);
+            }
+        }
+        
+        // 4. 이전 캐릭터를 찾았으면 재연결 성공
+        if (existingCharacter != null && !string.IsNullOrEmpty(oldSessionId))
+        {
+            // 재연결 대기 목록에서 제거
+            _disconnectedCharacters.TryRemove(oldSessionId, out _);
+            
+            // 이전 세션 정리 (활성 세션에서)
+            _sessionToCharacter.TryRemove(oldSessionId, out _);
+            _sessions.TryRemove(oldSessionId, out _);
+            
+            // 새 세션에 캐릭터 연결
+            existingCharacter.SessionId = context.Session.SessionId;
+            _sessionToCharacter.TryAdd(context.Session.SessionId, existingCharacter);
+            _sessions.TryAdd(context.Session.SessionId, context.Session);
+            
+            // 토큰-세션 매핑 업데이트
+            if (!string.IsNullOrEmpty(reconnectRequest.Token))
+            {
+                _tokenToSession.AddOrUpdate(reconnectRequest.Token, context.Session.SessionId, (k, v) => context.Session.SessionId);
+            }
+            
+            // 사용자명-세션 매핑 업데이트
+            if (!string.IsNullOrEmpty(reconnectRequest.Username))
+            {
+                _usernameToSession.AddOrUpdate(reconnectRequest.Username, context.Session.SessionId, (k, v) => context.Session.SessionId);
+            }
+            
+            // Interest Area 재설정
+            if (_defaultMap != null)
+            {
+                _defaultMap.InterestManager.SetInterestArea(
+                    context.Session.SessionId, 
+                    existingCharacter.X, 
+                    existingCharacter.Y, 
+                    existingCharacter.Z
+                );
+                
+                // 다른 클라이언트에게 재스폰 알림
+                await NotifyObjectSpawnAsync(existingCharacter);
+            }
+            
+            response.Success = true;
+            response.Message = "재연결 성공";
+            response.SessionId = context.Session.SessionId;
+            
+            Log.Information("재연결 성공: 세션 {NewSessionId} <- {OldSessionId}, 캐릭터 ID: {CharacterId}, 위치: ({X:F2}, {Y:F2}, {Z:F2})",
+                context.Session.SessionId, oldSessionId, existingCharacter.ObjectId, 
+                existingCharacter.X, existingCharacter.Y, existingCharacter.Z);
+        }
+        else
+        {
+            // 이전 캐릭터를 찾을 수 없으면 새 게임 시작
+            Log.Warning("재연결 실패: 이전 세션을 찾을 수 없음. 새 게임 시작 (Username: {Username}, Token: {TokenPrefix}...)",
+                reconnectRequest.Username ?? "없음",
+                string.IsNullOrEmpty(reconnectRequest.Token) ? "없음" : reconnectRequest.Token.Substring(0, Math.Min(8, reconnectRequest.Token.Length)));
+            
+            response.Success = true; // 재연결 실패지만 새 게임 시작은 성공으로 처리
+            response.Message = "이전 세션을 찾을 수 없어 새 게임을 시작합니다";
+            response.SessionId = context.Session.SessionId;
+            
+            // 새 게임 시작 (로그인과 동일한 처리)
+            var loginRequest = new LoginRequestPacket
+            {
+                Username = reconnectRequest.Username ?? "reconnect_user",
+                Password = "" // 재연결이므로 비밀번호 불필요
+            };
+            
+            var loginResponse = await _authService.LoginAsync(loginRequest);
+            if (loginResponse.Success && !string.IsNullOrEmpty(loginResponse.Token))
+            {
+                _tokenToSession.TryAdd(loginResponse.Token, context.Session.SessionId);
+                if (!string.IsNullOrEmpty(reconnectRequest.Username))
+                {
+                    _usernameToSession.TryAdd(reconnectRequest.Username, context.Session.SessionId);
+                }
+            }
+            
+            await StartGameAsync(context.Session);
+        }
+        
+        // 응답 패킷 전송
+        await context.Session.SendPacketAsync(response);
+        Log.Information("재연결 응답 전송: {SessionId}, Success: {Success}, Message: {Message}",
+            context.Session.SessionId, response.Success, response.Message);
     }
     
     private async void HandleMoveRequest(PacketContext context, MoveRequestPacket moveRequest)

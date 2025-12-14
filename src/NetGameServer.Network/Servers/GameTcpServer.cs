@@ -3,6 +3,7 @@ using System.Net.Sockets;
 using NetGameServer.Network.Management;
 using NetGameServer.Network.Processing;
 using NetGameServer.Network.Sessions;
+using Serilog;
 
 namespace NetGameServer.Network.Servers;
 
@@ -14,6 +15,7 @@ public class GameTcpServer : IDisposable
     private TcpListener? _listener;
     private readonly ConnectionManager _connectionManager;
     private readonly PacketProcessor _packetProcessor;
+    private readonly HeartbeatManager _heartbeatManager;
     private bool _isRunning = false;
     private CancellationTokenSource? _cancellationTokenSource;
     
@@ -29,14 +31,44 @@ public class GameTcpServer : IDisposable
         set => _packetProcessor.PacketHandler = value ?? ((context) => { });
     }
     
-    public GameTcpServer(int maxConnections = 10000, int packetWorkerCount = 4)
+    public GameTcpServer(
+        int maxConnections = 10000, 
+        int packetWorkerCount = 4,
+        TimeSpan? heartbeatInterval = null,
+        TimeSpan? heartbeatTimeout = null)
     {
         _connectionManager = new ConnectionManager(maxConnections);
         _packetProcessor = new PacketProcessor(packetWorkerCount);
         _packetProcessor.PacketHandler = OnPacketReceived;
         
-        _connectionManager.ClientConnected += (s, session) => ClientConnected?.Invoke(this, session);
-        _connectionManager.ClientDisconnected += (s, session) => ClientDisconnected?.Invoke(this, session);
+        // 하트비트 관리자 초기화
+        _heartbeatManager = new HeartbeatManager(
+            heartbeatInterval: heartbeatInterval,
+            timeout: heartbeatTimeout,
+            onTimeout: OnSessionTimeout
+        );
+        
+        _connectionManager.ClientConnected += (s, session) =>
+        {
+            _heartbeatManager.RegisterSession(session.SessionId);
+            ClientConnected?.Invoke(this, session);
+        };
+        
+        _connectionManager.ClientDisconnected += (s, session) =>
+        {
+            _heartbeatManager.UnregisterSession(session.SessionId);
+            ClientDisconnected?.Invoke(this, session);
+        };
+    }
+    
+    private async void OnSessionTimeout(string sessionId)
+    {
+        var session = _connectionManager.GetSession(sessionId);
+        if (session != null && session.IsConnected)
+        {
+            Log.Warning("세션 타임아웃으로 연결 종료: {SessionId}", sessionId);
+            await session.DisconnectAsync();
+        }
     }
     
     /// <summary>
@@ -52,8 +84,9 @@ public class GameTcpServer : IDisposable
         _isRunning = true;
         _cancellationTokenSource = new CancellationTokenSource();
         
-        Console.WriteLine($"게임 TCP 서버 시작: {address}:{port}");
-        Console.WriteLine($"최대 연결: {_connectionManager.MaxConnections}, 패킷 워커: {_packetProcessor.WorkerCount}");
+        Log.Information("게임 TCP 서버 시작: {Address}:{Port}", address, port);
+        Log.Information("최대 연결: {MaxConnections}, 패킷 워커: {WorkerCount}", 
+            _connectionManager.MaxConnections, _packetProcessor.WorkerCount);
         
         _ = Task.Run(async () => await AcceptClientsAsync(_cancellationTokenSource.Token));
         await Task.CompletedTask;
@@ -73,8 +106,9 @@ public class GameTcpServer : IDisposable
         
         _connectionManager.Dispose();
         _packetProcessor.Dispose();
+        _heartbeatManager.Dispose();
         
-        Console.WriteLine("게임 TCP 서버 중지");
+        Log.Information("게임 TCP 서버 중지");
         await Task.CompletedTask;
     }
     
@@ -98,11 +132,18 @@ public class GameTcpServer : IDisposable
             }
             catch (ObjectDisposedException)
             {
+                // 리스너가 종료된 경우 (정상 종료)
+                Log.Debug("TCP 리스너 종료됨");
                 break;
+            }
+            catch (SocketException ex)
+            {
+                Log.Warning(ex, "클라이언트 수락 소켓 오류: {SocketErrorCode} - {Message}", 
+                    ex.SocketErrorCode, ex.Message);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"클라이언트 수락 오류: {ex.Message}");
+                Log.Error(ex, "클라이언트 수락 오류: {Message}", ex.Message);
             }
         }
     }
@@ -119,21 +160,34 @@ public class GameTcpServer : IDisposable
             if (!_connectionManager.TryAddSession(session))
             {
                 // 연결 수 초과
+                Log.Warning("연결 수 초과: 세션 {SessionId} 거부", session.SessionId);
                 await session.DisconnectAsync();
                 return;
             }
             
-            Console.WriteLine($"클라이언트 연결: {session.SessionId} (현재 연결: {_connectionManager.ActiveSessionCount})");
+            Log.Information("클라이언트 연결: 세션 {SessionId} (현재 연결: {ActiveCount})", 
+                session.SessionId, _connectionManager.ActiveSessionCount);
             
-            // 세션이 종료될 때까지 대기
+            // 세션이 종료될 때까지 대기하며 하트비트 체크
             while (session.IsConnected && !cancellationToken.IsCancellationRequested)
             {
+                // 하트비트 업데이트 (패킷 수신 시 자동 업데이트됨)
+                if (session is GameClientSession gameSession)
+                {
+                    _heartbeatManager.UpdateActivity(gameSession.SessionId);
+                }
+                
                 await Task.Delay(1000, cancellationToken);
             }
         }
+        catch (SocketException ex)
+        {
+            Log.Warning(ex, "클라이언트 처리 소켓 오류: {SocketErrorCode} - {Message}", 
+                ex.SocketErrorCode, ex.Message);
+        }
         catch (Exception ex)
         {
-            Console.WriteLine($"클라이언트 처리 오류: {ex.Message}");
+            Log.Error(ex, "클라이언트 처리 오류: {Message}", ex.Message);
         }
         finally
         {
@@ -150,7 +204,8 @@ public class GameTcpServer : IDisposable
     private void OnPacketReceived(PacketContext context)
     {
         // 기본 구현 - 게임 로직에서 PacketHandler를 설정하여 오버라이드
-        Console.WriteLine($"패킷 수신: {context.Session.SessionId}, 타입: {context.Packet.PacketId}");
+        Log.Debug("패킷 수신: 세션 {SessionId}, 타입: {PacketId}", 
+            context.Session.SessionId, context.Packet.PacketId);
     }
     
     /// <summary>

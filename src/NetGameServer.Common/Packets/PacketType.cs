@@ -6,6 +6,8 @@ public enum PacketType : ushort
     LoginResponse = 1001,
     RegisterRequest = 1002,
     RegisterResponse = 1003,
+    ReconnectRequest = 1004,
+    ReconnectResponse = 1005,
     
     GameStart = 2000,
     GameAction = 2001,
@@ -43,6 +45,8 @@ public static class PacketPriority
             PacketType.ObjectSnapshot => Normal,  // 스냅샷은 주기적이므로 Normal
             PacketType.LoginRequest => High,
             PacketType.LoginResponse => High,
+            PacketType.ReconnectRequest => High,
+            PacketType.ReconnectResponse => High,
             PacketType.Heartbeat => Low,
             _ => Normal
         };

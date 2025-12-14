@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Collections.Concurrent;
+using Serilog;
 
 namespace NetGameServer.Network.Processing;
 
@@ -42,7 +43,7 @@ public class PacketBuffer : IDisposable
                 
                 if (packetSize < 0 || packetSize > _maxSize)
                 {
-                    Console.WriteLine($"잘못된 패킷 크기: {packetSize}, 버퍼 초기화");
+                    Log.Warning("잘못된 패킷 크기: {PacketSize} (최대: {MaxSize}), 버퍼 초기화", packetSize, _maxSize);
                     _bufferOffset = 0;
                     break;
                 }
@@ -54,12 +55,17 @@ public class PacketBuffer : IDisposable
                     break;
                 }
                 
+                // 패킷 데이터 추출
+                // 참고: 작은 패킷의 경우 스택 할당을 고려할 수 있지만,
+                // 패킷 처리 워커가 완료될 때까지 메모리를 유지해야 하므로 힙 할당이 필요
                 var packetData = new byte[packetSize];
                 Buffer.BlockCopy(_buffer, sizeof(int), packetData, 0, packetSize);
                 packets.Add(packetData);
                 
+                // 버퍼에서 처리된 데이터 제거
                 if (_bufferOffset > totalSize)
                 {
+                    // 남은 데이터를 앞으로 이동
                     Buffer.BlockCopy(_buffer, totalSize, _buffer, 0, _bufferOffset - totalSize);
                 }
                 _bufferOffset -= totalSize;

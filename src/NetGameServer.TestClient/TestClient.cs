@@ -16,11 +16,15 @@ public class TestClient : IDisposable
     private readonly List<byte> _packetBuffer = new();
     private bool _isConnected = false;
     private Task? _receiveTask;
+    private string? _authToken;
+    private string? _username;
     
     public string ClientId { get; }
     public bool IsConnected => _isConnected && _tcpClient?.Connected == true;
+    public string? AuthToken => _authToken;
     
     public event EventHandler<PacketBase>? PacketReceived;
+    public event EventHandler? ConnectionLost;
     
     public TestClient()
     {
@@ -30,7 +34,7 @@ public class TestClient : IDisposable
     /// <summary>
     /// 서버에 연결
     /// </summary>
-    public async Task<bool> ConnectAsync(IPAddress address, int port)
+    public async Task<bool> ConnectAsync(IPAddress address, int port, bool isReconnect = false)
     {
         try
         {
@@ -42,7 +46,14 @@ public class TestClient : IDisposable
             // 수신 루프 시작
             _receiveTask = Task.Run(ReceiveLoopAsync);
             
-            Log.Information("[{ClientId}] 서버에 연결됨: {Address}:{Port}", ClientId, address, port);
+            if (isReconnect)
+            {
+                Log.Information("[{ClientId}] 서버에 재연결됨: {Address}:{Port}", ClientId, address, port);
+            }
+            else
+            {
+                Log.Information("[{ClientId}] 서버에 연결됨: {Address}:{Port}", ClientId, address, port);
+            }
             return true;
         }
         catch (Exception ex)
@@ -50,6 +61,72 @@ public class TestClient : IDisposable
             Log.Error(ex, "[{ClientId}] 연결 실패", ClientId);
             return false;
         }
+    }
+    
+    /// <summary>
+    /// 재연결 시도 (지수 백오프)
+    /// </summary>
+    public async Task<bool> ReconnectAsync(IPAddress address, int port, int maxRetries = 5)
+    {
+        int retryCount = 0;
+        int baseDelay = 1000; // 1초부터 시작
+        
+        while (retryCount < maxRetries)
+        {
+            retryCount++;
+            int delay = baseDelay * (int)Math.Pow(2, retryCount - 1); // 지수 백오프
+            
+            Log.Information("[{ClientId}] 재연결 시도 {RetryCount}/{MaxRetries} (대기: {Delay}ms)", 
+                ClientId, retryCount, maxRetries, delay);
+            
+            await Task.Delay(delay);
+            
+            if (await ConnectAsync(address, port, isReconnect: true))
+            {
+                // 재연결 성공 시 재연결 요청 전송
+                if (!string.IsNullOrEmpty(_authToken) && !string.IsNullOrEmpty(_username))
+                {
+                    var reconnectRequest = new ReconnectRequestPacket
+                    {
+                        Token = _authToken,
+                        Username = _username
+                    };
+                    
+                    await SendPacketAsync(reconnectRequest);
+                    
+                    // 재연결 응답 대기
+                    var response = await ReceivePacketAsync(TimeSpan.FromSeconds(5), (ushort)PacketType.ReconnectResponse);
+                    if (response is ReconnectResponsePacket reconnectResponse && reconnectResponse.Success)
+                    {
+                        Log.Information("[{ClientId}] 재연결 성공: {Message}", ClientId, reconnectResponse.Message);
+                        return true;
+                    }
+                    else
+                    {
+                        Log.Warning("[{ClientId}] 재연결 인증 실패", ClientId);
+                        await DisconnectAsync();
+                    }
+                }
+                else
+                {
+                    // 토큰이 없으면 일반 연결로 처리
+                    return true;
+                }
+            }
+        }
+        
+        Log.Error("[{ClientId}] 재연결 실패: 최대 재시도 횟수 초과", ClientId);
+        return false;
+    }
+    
+    /// <summary>
+    /// 인증 토큰 저장 (로그인 성공 시 호출)
+    /// </summary>
+    public void SetAuthToken(string token, string username)
+    {
+        _authToken = token;
+        _username = username;
+        Log.Debug("[{ClientId}] 인증 토큰 저장됨", ClientId);
     }
     
     /// <summary>
@@ -181,6 +258,7 @@ public class TestClient : IDisposable
         finally
         {
             _isConnected = false;
+            ConnectionLost?.Invoke(this, EventArgs.Empty);
         }
     }
     
