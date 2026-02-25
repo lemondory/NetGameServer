@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Threading;
 
+using NetGameServer.Common.Packets.Proto;
 using NetGameServer.Network.Sessions;
 
 namespace NetGameServer.Network.Servers;
@@ -159,7 +160,7 @@ public class TcpServerOptimized : IDisposable
     /// <summary>
     /// 모든 세션에 패킷 브로드캐스트
     /// </summary>
-    public async Task BroadcastAsync(NetGameServer.Common.Packets.PacketBase packet)
+    public async Task BroadcastAsync(GamePacket packet)
     {
         var sessions = _sessions.Values
             .Where(s => s.IsConnected)
@@ -172,7 +173,7 @@ public class TcpServerOptimized : IDisposable
     /// <summary>
     /// 특정 세션에 패킷 전송
     /// </summary>
-    public async Task SendToSessionAsync(string sessionId, NetGameServer.Common.Packets.PacketBase packet)
+    public async Task SendToSessionAsync(string sessionId, GamePacket packet)
     {
         if (_sessions.TryGetValue(sessionId, out var session) && session.IsConnected)
         {

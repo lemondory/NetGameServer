@@ -1,6 +1,8 @@
 using System.Net;
 using System.Net.Sockets;
+using Google.Protobuf;
 using NetGameServer.Common.Packets;
+using NetGameServer.Common.Packets.Proto;
 using Serilog;
 
 namespace NetGameServer.TestClient;
@@ -23,7 +25,7 @@ public class TestClient : IDisposable
     public bool IsConnected => _isConnected && _tcpClient?.Connected == true;
     public string? AuthToken => _authToken;
     
-    public event EventHandler<PacketBase>? PacketReceived;
+    public event EventHandler<GamePacket>? PacketReceived;
     public event EventHandler? ConnectionLost;
     
     public TestClient()
@@ -86,19 +88,17 @@ public class TestClient : IDisposable
                 // 재연결 성공 시 재연결 요청 전송
                 if (!string.IsNullOrEmpty(_authToken) && !string.IsNullOrEmpty(_username))
                 {
-                    var reconnectRequest = new ReconnectRequestPacket
+                    var reconnectRequest = new GamePacket
                     {
-                        Token = _authToken,
-                        Username = _username
+                        ReconnectRequest = new ReconnectRequest { Token = _authToken, Username = _username }
                     };
-                    
                     await SendPacketAsync(reconnectRequest);
                     
-                    // 재연결 응답 대기
-                    var response = await ReceivePacketAsync(TimeSpan.FromSeconds(5), (ushort)PacketType.ReconnectResponse);
-                    if (response is ReconnectResponsePacket reconnectResponse && reconnectResponse.Success)
+                    var response = await ReceivePacketAsync(TimeSpan.FromSeconds(5), GamePacket.PayloadOneofCase.ReconnectResponse);
+                    if (response != null && response.PayloadCase == GamePacket.PayloadOneofCase.ReconnectResponse && 
+                        response.ReconnectResponse.Success)
                     {
-                        Log.Information("[{ClientId}] 재연결 성공: {Message}", ClientId, reconnectResponse.Message);
+                        Log.Information("[{ClientId}] 재연결 성공: {Message}", ClientId, response.ReconnectResponse.Message);
                         return true;
                     }
                     else
@@ -132,7 +132,7 @@ public class TestClient : IDisposable
     /// <summary>
     /// 패킷 전송
     /// </summary>
-    public async Task<bool> SendPacketAsync(PacketBase packet)
+    public async Task<bool> SendPacketAsync(GamePacket packet)
     {
         if (!IsConnected || _stream == null)
         {
@@ -142,7 +142,7 @@ public class TestClient : IDisposable
         
         try
         {
-            var data = packet.Serialize();
+            var data = packet.ToByteArray();
             var lengthBytes = BitConverter.GetBytes(data.Length);
             
             // 패킷 크기 + 패킷 데이터 전송
@@ -150,7 +150,7 @@ public class TestClient : IDisposable
             await _stream.WriteAsync(data, 0, data.Length);
             await _stream.FlushAsync();
             
-            Log.Debug("[{ClientId}] 패킷 전송: {PacketId} ({Size} bytes)", ClientId, packet.PacketId, data.Length);
+            Log.Debug("[{ClientId}] 패킷 전송: {PayloadCase} ({Size} bytes)", ClientId, packet.PayloadCase, data.Length);
             return true;
         }
         catch (Exception ex)
@@ -163,21 +163,18 @@ public class TestClient : IDisposable
     /// <summary>
     /// 패킷 수신 대기
     /// </summary>
-    public async Task<PacketBase?> ReceivePacketAsync(TimeSpan timeout, ushort? expectedPacketId = null)
+    public async Task<GamePacket?> ReceivePacketAsync(TimeSpan timeout, GamePacket.PayloadOneofCase? expectedCase = null)
     {
-        var startTime = DateTime.UtcNow;
-        PacketBase? receivedPacket = null;
-        
-        EventHandler<PacketBase>? handler = null;
-        var tcs = new TaskCompletionSource<PacketBase?>();
+        GamePacket? receivedPacket = null;
+        EventHandler<GamePacket>? handler = null;
+        var tcs = new TaskCompletionSource<GamePacket?>();
         
         handler = (sender, packet) =>
         {
-            // 특정 패킷 타입을 기다리는 경우 필터링
-            if (expectedPacketId.HasValue && packet.PacketId != expectedPacketId.Value)
+            if (expectedCase.HasValue && packet.PayloadCase != expectedCase.Value)
             {
-                Log.Debug("[{ClientId}] 기대한 패킷이 아님: 기대 {ExpectedId}, 수신 {ReceivedId}", 
-                    ClientId, expectedPacketId.Value, packet.PacketId);
+                Log.Debug("[{ClientId}] 기대한 패킷이 아님: 기대 {Expected}, 수신 {Received}", 
+                    ClientId, expectedCase.Value, packet.PayloadCase);
                 return; // 이 패킷은 무시하고 계속 대기
             }
             
@@ -194,10 +191,10 @@ public class TestClient : IDisposable
             
             if (completedTask == timeoutTask)
             {
-                if (expectedPacketId.HasValue)
+                if (expectedCase.HasValue)
                 {
-                    Log.Warning("[{ClientId}] 패킷 수신 타임아웃: 기대한 패킷 ID {ExpectedId} ({Timeout}초)", 
-                        ClientId, expectedPacketId.Value, timeout.TotalSeconds);
+                    Log.Warning("[{ClientId}] 패킷 수신 타임아웃: 기대한 패킷 {Expected} ({Timeout}초)", 
+                        ClientId, expectedCase.Value, timeout.TotalSeconds);
                 }
                 else
                 {
@@ -209,7 +206,7 @@ public class TestClient : IDisposable
             var result = await tcs.Task;
             if (result != null)
             {
-                Log.Debug("[{ClientId}] 패킷 수신 완료: {PacketId}", ClientId, result.PacketId);
+                Log.Debug("[{ClientId}] 패킷 수신 완료: {PayloadCase}", ClientId, result.PayloadCase);
             }
             return result;
         }
@@ -300,34 +297,23 @@ public class TestClient : IDisposable
             _packetBuffer.RemoveRange(0, totalSize);
             Log.Debug("[{ClientId}] 패킷 데이터 추출 완료: {Size} bytes", ClientId, packetData.Length);
             
-            // 패킷 역직렬화
-            try
+            // 패킷 역직렬화 (TryParse 스타일)
+            if (packetData.TryToGamePacket(out var packet) && packet != null)
             {
-                var packet = PacketFactory.DeserializePacket(packetData);
-                if (packet != null)
+                Log.Information("[{ClientId}] 패킷 수신 성공: {PayloadCase} ({Size} bytes)", ClientId, packet.PayloadCase, packetData.Length);
+                PacketReceived?.Invoke(this, packet);
+            }
+            else
+            {
+                if (packetData.Length >= 2)
                 {
-                    Log.Information("[{ClientId}] 패킷 수신 성공: {PacketId} ({Size} bytes)", ClientId, packet.PacketId, packetData.Length);
-                    PacketReceived?.Invoke(this, packet);
+                    Log.Warning("[{ClientId}] 패킷 파싱 실패 ({Size} bytes), 데이터: {Data}", 
+                        ClientId, packetData.Length, Convert.ToHexString(packetData.Take(Math.Min(32, packetData.Length)).ToArray()));
                 }
                 else
                 {
-                    // 패킷 타입을 읽어서 로그 남기기
-                    if (packetData.Length >= 2)
-                    {
-                        var packetId = BitConverter.ToUInt16(packetData, 0);
-                        Log.Warning("[{ClientId}] 알 수 없는 패킷 타입: {PacketId} ({Size} bytes), 데이터: {Data}", 
-                            ClientId, packetId, packetData.Length, Convert.ToHexString(packetData.Take(Math.Min(32, packetData.Length)).ToArray()));
-                    }
-                    else
-                    {
-                        Log.Warning("[{ClientId}] 패킷 데이터가 너무 짧음: {Size} bytes", ClientId, packetData.Length);
-                    }
+                    Log.Warning("[{ClientId}] 패킷 데이터가 너무 짧음: {Size} bytes", ClientId, packetData.Length);
                 }
-            }
-            catch (Exception ex)
-            {
-                Log.Error(ex, "[{ClientId}] 패킷 역직렬화 실패: {Size} bytes, 데이터: {Data}", 
-                    ClientId, packetData.Length, Convert.ToHexString(packetData.Take(Math.Min(32, packetData.Length)).ToArray()));
             }
         }
     }

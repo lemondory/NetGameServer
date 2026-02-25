@@ -1,4 +1,4 @@
-using NetGameServer.Common.Packets;
+using NetGameServer.Common.Packets.Proto;
 
 namespace NetGameServer.Auth;
 
@@ -10,7 +10,7 @@ public interface IAuthService
     /// <summary>
     /// 로그인 처리
     /// </summary>
-    Task<LoginResponsePacket> LoginAsync(LoginRequestPacket request);
+    Task<LoginResponse> LoginAsync(LoginRequest request);
     
     /// <summary>
     /// 토큰 검증

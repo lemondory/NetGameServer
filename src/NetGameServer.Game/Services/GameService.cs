@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using NetGameServer.Auth;
 using NetGameServer.Common.MapData;
 using NetGameServer.Common.Packets;
+using NetGameServer.Common.Packets.Proto;
 using NetGameServer.Game.Entities;
 using NetGameServer.Game.Pooling;
 using NetGameServer.Game.Spatial;
@@ -363,22 +364,12 @@ public class GameService : IGameService
             ? _defaultMap.InterestManager.UpdateObjectInterest(obj.ObjectId, oldX, oldY, oldZ, x, y, z)
             : _defaultMap.InterestManager.GetInterestedClients(obj.ObjectId, obj.X, obj.Y, obj.Z);
         
-        // Delta 패킷 생성
-        var updatePacket = new ObjectUpdatePacket
-        {
-            ObjectId = obj.ObjectId,
-            HasPosition = hasPosition,
-            X = x,
-            Y = y,
-            Z = z,
-            HasHp = hasHp,
-            Hp = hp,
-            HasLevel = hasLevel,
-            Level = level
-        };
-        updatePacket.SetFlags();
+        var updateMsg = new ObjectUpdate { ObjectId = obj.ObjectId };
+        if (hasPosition) { updateMsg.X = x; updateMsg.Y = y; updateMsg.Z = z; }
+        if (hasHp) updateMsg.Hp = hp;
+        if (hasLevel) updateMsg.Level = level;
         
-        // 관심 클라이언트에게 전송
+        var updatePacket = new GamePacket { ObjectUpdate = updateMsg };
         foreach (var sessionId in interestedClients)
         {
             if (_sessions.TryGetValue(sessionId, out var session))
@@ -400,25 +391,20 @@ public class GameService : IGameService
         var interestedClients = _defaultMap.InterestManager.GetInterestedClients(
             obj.ObjectId, obj.X, obj.Y, obj.Z);
         
-        // 스폰 패킷 생성
-        var spawnPacket = new ObjectSpawnPacket
+        var hp = obj is Character c ? c.Hp : (obj is Monster m ? m.Hp : 0);
+        var maxHp = obj is Character c2 ? c2.MaxHp : (obj is Monster m2 ? m2.MaxHp : 0);
+        var level = obj is Character c3 ? c3.Level : 0;
+        
+        _defaultMap.StateTracker.SaveState(obj.ObjectId, obj.X, obj.Y, obj.Z, hp, maxHp, level);
+        
+        var spawnMsg = new ObjectSpawn
         {
             ObjectId = obj.ObjectId,
-            ObjectType = (byte)obj.ObjectType,
-            X = obj.X,
-            Y = obj.Y,
-            Z = obj.Z,
-            Hp = obj is Character c ? c.Hp : (obj is Monster m ? m.Hp : 0),
-            MaxHp = obj is Character c2 ? c2.MaxHp : (obj is Monster m2 ? m2.MaxHp : 0),
-            Level = obj is Character c3 ? c3.Level : 0
+            ObjectType = (uint)obj.ObjectType,
+            X = obj.X, Y = obj.Y, Z = obj.Z,
+            Hp = hp, MaxHp = maxHp, Level = level
         };
-        
-        // 상태 저장
-        _defaultMap.StateTracker.SaveState(
-            obj.ObjectId, obj.X, obj.Y, obj.Z,
-            spawnPacket.Hp, spawnPacket.MaxHp, spawnPacket.Level);
-        
-        // 관심 클라이언트에게 전송
+        var spawnPacket = new GamePacket { ObjectSpawn = spawnMsg };
         foreach (var sessionId in interestedClients)
         {
             if (_sessions.TryGetValue(sessionId, out var session))
@@ -441,16 +427,9 @@ public class GameService : IGameService
         if (interestedClients == null)
             return;
         
-        // 제거 패킷 생성
-        var despawnPacket = new ObjectDespawnPacket
-        {
-            ObjectId = objectId
-        };
-        
-        // 상태 제거
         _defaultMap.StateTracker.RemoveState(objectId);
         
-        // 관심 클라이언트에게 전송
+        var despawnPacket = new GamePacket { ObjectDespawn = new ObjectDespawn { ObjectId = objectId } };
         foreach (var sessionId in interestedClients)
         {
             if (_sessions.TryGetValue(sessionId, out var session))
@@ -471,31 +450,22 @@ public class GameService : IGameService
         // 관심 영역 내 오브젝트 조회
         var objectIds = _defaultMap.GetObjectsInInterest(session.SessionId);
         
-        var snapshot = new ObjectSnapshotPacket();
+        var snapshot = new ObjectSnapshot();
         foreach (var objectId in objectIds)
         {
-            // 자신의 캐릭터는 제외 (이미 알고 있음)
             if (objectId == character.ObjectId)
                 continue;
             
-            IGameObject? obj = null;
-            if (objectId < 10000)
-            {
-                obj = _defaultMap.GetObject<Character>(objectId);
-            }
-            else
-            {
-                obj = _defaultMap.GetObject<Monster>(objectId);
-            }
+            IGameObject? obj = objectId < 10000
+                ? _defaultMap.GetObject<Character>(objectId)
+                : _defaultMap.GetObject<Monster>(objectId);
             if (obj != null)
             {
-                snapshot.Objects.Add(new ObjectSnapshotPacket.ObjectData
+                snapshot.Objects.Add(new NetGameServer.Common.Packets.Proto.ObjectData
                 {
                     ObjectId = obj.ObjectId,
-                    ObjectType = (byte)obj.ObjectType,
-                    X = obj.X,
-                    Y = obj.Y,
-                    Z = obj.Z,
+                    ObjectType = (uint)obj.ObjectType,
+                    X = obj.X, Y = obj.Y, Z = obj.Z,
                     Hp = obj is Character c ? c.Hp : (obj is Monster m ? m.Hp : 0),
                     MaxHp = obj is Character c2 ? c2.MaxHp : (obj is Monster m2 ? m2.MaxHp : 0),
                     Level = obj is Character c3 ? c3.Level : 0
@@ -506,7 +476,7 @@ public class GameService : IGameService
         if (snapshot.Objects.Count > 0)
         {
             Log.Debug("초기 스냅샷 전송: 세션 {SessionId}, 오브젝트 수: {Count}", session.SessionId, snapshot.Objects.Count);
-            await session.SendPacketAsync(snapshot);
+            await session.SendPacketAsync(new GamePacket { ObjectSnapshot = snapshot });
         }
         else
         {
@@ -538,23 +508,19 @@ public class GameService : IGameService
     {
         try
         {
-            switch (context.Packet)
+            switch (context.Packet.PayloadCase)
             {
-                case LoginRequestPacket loginRequest:
-                    HandleLoginRequest(context);
+                case GamePacket.PayloadOneofCase.LoginRequest:
+                    HandleLoginRequest(context, context.Packet.LoginRequest);
                     break;
-                    
-                case ReconnectRequestPacket reconnectRequest:
-                    HandleReconnectRequest(context, reconnectRequest);
+                case GamePacket.PayloadOneofCase.ReconnectRequest:
+                    HandleReconnectRequest(context, context.Packet.ReconnectRequest);
                     break;
-                    
-                case MoveRequestPacket moveRequest:
-                    HandleMoveRequest(context, moveRequest);
+                case GamePacket.PayloadOneofCase.MoveRequest:
+                    HandleMoveRequest(context, context.Packet.MoveRequest);
                     break;
-                    
-                // 다른 패킷 타입 처리 추가
                 default:
-                    Log.Warning("알 수 없는 패킷 타입: {PacketId}", context.Packet.PacketId);
+                    Log.Warning("알 수 없는 패킷 타입: {PayloadCase}", context.Packet.PayloadCase);
                     break;
             }
         }
@@ -564,62 +530,48 @@ public class GameService : IGameService
         }
     }
     
-    private async void HandleLoginRequest(PacketContext context)
+    private async void HandleLoginRequest(PacketContext context, LoginRequest request)
     {
-        if (context.Packet is not LoginRequestPacket loginRequest)
-        {
-            Log.Warning("잘못된 패킷 타입: {PacketType}", context.Packet.GetType());
-            return;
-        }
-        
         Log.Information("로그인 요청 처리: {SessionId}, Username: {Username}",
-            context.Session.SessionId, loginRequest.Username);
+            context.Session.SessionId, request.Username);
         
-        // 인증 서비스를 통한 로그인 처리
-        var response = await _authService.LoginAsync(loginRequest);
+        var response = await _authService.LoginAsync(request);
         
         // 로그인 실패 시 자동 등록 (테스트용 - 실제 프로덕션에서는 제거)
-        if (!response.Success && !string.IsNullOrEmpty(loginRequest.Username) && !string.IsNullOrEmpty(loginRequest.Password))
+        if (!response.Success && !string.IsNullOrEmpty(request.Username) && !string.IsNullOrEmpty(request.Password))
         {
-            Log.Information("사용자 자동 등록 시도: {Username}", loginRequest.Username);
-            var registered = await _authService.RegisterAsync(loginRequest.Username, loginRequest.Password);
+            Log.Information("사용자 자동 등록 시도: {Username}", request.Username);
+            var registered = await _authService.RegisterAsync(request.Username, request.Password);
             if (registered)
             {
-                // 다시 로그인 시도
-                response = await _authService.LoginAsync(loginRequest);
+                response = await _authService.LoginAsync(request);
                 Log.Information("자동 등록 후 로그인: {Success}", response.Success);
             }
         }
         
-        // 응답 패킷 전송
         Log.Debug("로그인 응답 패킷 전송 시작: {SessionId}", context.Session.SessionId);
-        await context.Session.SendPacketAsync(response);
+        await context.Session.SendPacketAsync(new GamePacket { LoginResponse = response });
         Log.Information("로그인 응답 전송 완료: {SessionId}, Success: {Success}, Message: {Message}",
             context.Session.SessionId, response.Success, response.Message);
         
-        // 로그인 성공 시 토큰-세션 매핑 저장 및 게임 시작
-        if (response.Success && !string.IsNullOrEmpty(response.Token))
+        if (response.Success && response.HasToken)
         {
-            // 토큰 -> 세션ID 매핑 저장
             _tokenToSession.TryAdd(response.Token, context.Session.SessionId);
-            // 사용자명 -> 세션ID 매핑 저장 (토큰 만료 대비)
-            _usernameToSession.TryAdd(loginRequest.Username, context.Session.SessionId);
-            
+            _usernameToSession.TryAdd(request.Username, context.Session.SessionId);
             Log.Debug("토큰-세션 매핑 저장: Token={TokenPrefix}..., SessionId={SessionId}, Username={Username}",
                 response.Token.Substring(0, Math.Min(8, response.Token.Length)), 
-                context.Session.SessionId, loginRequest.Username);
-            
+                context.Session.SessionId, request.Username);
             await StartGameAsync(context.Session);
         }
     }
     
-    private async void HandleReconnectRequest(PacketContext context, ReconnectRequestPacket reconnectRequest)
+    private async void HandleReconnectRequest(PacketContext context, ReconnectRequest request)
     {
         Log.Information("재연결 요청 처리: {SessionId}, Username: {Username}, Token: {Token}",
-            context.Session.SessionId, reconnectRequest.Username, 
-            string.IsNullOrEmpty(reconnectRequest.Token) ? "없음" : reconnectRequest.Token.Substring(0, Math.Min(8, reconnectRequest.Token.Length)) + "...");
+            context.Session.SessionId, request.Username, 
+            string.IsNullOrEmpty(request.Token) ? "없음" : request.Token.Substring(0, Math.Min(8, request.Token.Length)) + "...");
         
-        var response = new ReconnectResponsePacket
+        var response = new ReconnectResponse
         {
             Success = false,
             Message = "재연결 실패"
@@ -629,18 +581,16 @@ public class GameService : IGameService
         Character? existingCharacter = null;
         
         // 1. 토큰 검증 및 이전 세션 찾기
-        if (!string.IsNullOrEmpty(reconnectRequest.Token))
+        if (!string.IsNullOrEmpty(request.Token))
         {
-            // 토큰 유효성 검증
-            var isTokenValid = await _authService.ValidateTokenAsync(reconnectRequest.Token);
+            var isTokenValid = await _authService.ValidateTokenAsync(request.Token);
             
             if (isTokenValid)
             {
-                // 토큰으로 이전 세션ID 찾기
-                if (_tokenToSession.TryGetValue(reconnectRequest.Token, out oldSessionId))
+                if (_tokenToSession.TryGetValue(request.Token, out oldSessionId))
                 {
                     Log.Debug("토큰으로 이전 세션 찾음: Token={TokenPrefix}..., OldSessionId={OldSessionId}",
-                        reconnectRequest.Token.Substring(0, Math.Min(8, reconnectRequest.Token.Length)), oldSessionId);
+                        request.Token.Substring(0, Math.Min(8, request.Token.Length)), oldSessionId);
                     
                     // 이전 세션의 캐릭터 찾기
                     if (_sessionToCharacter.TryGetValue(oldSessionId, out existingCharacter))
@@ -656,23 +606,23 @@ public class GameService : IGameService
                 else
                 {
                     Log.Warning("토큰으로 이전 세션을 찾을 수 없음: Token={TokenPrefix}...",
-                        reconnectRequest.Token.Substring(0, Math.Min(8, reconnectRequest.Token.Length)));
+                        request.Token.Substring(0, Math.Min(8, request.Token.Length)));
                 }
             }
             else
             {
                 Log.Warning("토큰이 유효하지 않음: Token={TokenPrefix}...",
-                    reconnectRequest.Token.Substring(0, Math.Min(8, reconnectRequest.Token.Length)));
+                    request.Token.Substring(0, Math.Min(8, request.Token.Length)));
             }
         }
         
         // 2. 토큰으로 찾지 못했으면 사용자명으로 시도
-        if (existingCharacter == null && !string.IsNullOrEmpty(reconnectRequest.Username))
+        if (existingCharacter == null && !string.IsNullOrEmpty(request.Username))
         {
-            if (_usernameToSession.TryGetValue(reconnectRequest.Username, out oldSessionId))
+            if (_usernameToSession.TryGetValue(request.Username, out oldSessionId))
             {
                 Log.Debug("사용자명으로 이전 세션 찾음: Username={Username}, OldSessionId={OldSessionId}",
-                    reconnectRequest.Username, oldSessionId);
+                    request.Username, oldSessionId);
                 
                 // 활성 세션에서 찾기
                 if (_sessionToCharacter.TryGetValue(oldSessionId, out existingCharacter))
@@ -716,16 +666,13 @@ public class GameService : IGameService
             _sessionToCharacter.TryAdd(context.Session.SessionId, existingCharacter);
             _sessions.TryAdd(context.Session.SessionId, context.Session);
             
-            // 토큰-세션 매핑 업데이트
-            if (!string.IsNullOrEmpty(reconnectRequest.Token))
+            if (!string.IsNullOrEmpty(request.Token))
             {
-                _tokenToSession.AddOrUpdate(reconnectRequest.Token, context.Session.SessionId, (k, v) => context.Session.SessionId);
+                _tokenToSession.AddOrUpdate(request.Token, context.Session.SessionId, (k, v) => context.Session.SessionId);
             }
-            
-            // 사용자명-세션 매핑 업데이트
-            if (!string.IsNullOrEmpty(reconnectRequest.Username))
+            if (!string.IsNullOrEmpty(request.Username))
             {
-                _usernameToSession.AddOrUpdate(reconnectRequest.Username, context.Session.SessionId, (k, v) => context.Session.SessionId);
+                _usernameToSession.AddOrUpdate(request.Username, context.Session.SessionId, (k, v) => context.Session.SessionId);
             }
             
             // Interest Area 재설정
@@ -754,40 +701,37 @@ public class GameService : IGameService
         {
             // 이전 캐릭터를 찾을 수 없으면 새 게임 시작
             Log.Warning("재연결 실패: 이전 세션을 찾을 수 없음. 새 게임 시작 (Username: {Username}, Token: {TokenPrefix}...)",
-                reconnectRequest.Username ?? "없음",
-                string.IsNullOrEmpty(reconnectRequest.Token) ? "없음" : reconnectRequest.Token.Substring(0, Math.Min(8, reconnectRequest.Token.Length)));
+                request.Username ?? "없음",
+                string.IsNullOrEmpty(request.Token) ? "없음" : request.Token.Substring(0, Math.Min(8, request.Token.Length)));
             
-            response.Success = true; // 재연결 실패지만 새 게임 시작은 성공으로 처리
+            response.Success = true;
             response.Message = "이전 세션을 찾을 수 없어 새 게임을 시작합니다";
             response.SessionId = context.Session.SessionId;
             
-            // 새 게임 시작 (로그인과 동일한 처리)
-            var loginRequest = new LoginRequestPacket
+            var loginRequest = new LoginRequest
             {
-                Username = reconnectRequest.Username ?? "reconnect_user",
-                Password = "" // 재연결이므로 비밀번호 불필요
+                Username = request.Username ?? "reconnect_user",
+                Password = ""
             };
-            
             var loginResponse = await _authService.LoginAsync(loginRequest);
-            if (loginResponse.Success && !string.IsNullOrEmpty(loginResponse.Token))
+            if (loginResponse.Success && loginResponse.HasToken)
             {
                 _tokenToSession.TryAdd(loginResponse.Token, context.Session.SessionId);
-                if (!string.IsNullOrEmpty(reconnectRequest.Username))
+                if (!string.IsNullOrEmpty(request.Username))
                 {
-                    _usernameToSession.TryAdd(reconnectRequest.Username, context.Session.SessionId);
+                    _usernameToSession.TryAdd(request.Username, context.Session.SessionId);
                 }
             }
             
             await StartGameAsync(context.Session);
         }
         
-        // 응답 패킷 전송
-        await context.Session.SendPacketAsync(response);
+        await context.Session.SendPacketAsync(new GamePacket { ReconnectResponse = response });
         Log.Information("재연결 응답 전송: {SessionId}, Success: {Success}, Message: {Message}",
             context.Session.SessionId, response.Success, response.Message);
     }
     
-    private async void HandleMoveRequest(PacketContext context, MoveRequestPacket moveRequest)
+    private async void HandleMoveRequest(PacketContext context, MoveRequest request)
     {
         if (!_sessionToCharacter.TryGetValue(context.Session.SessionId, out var character))
         {
@@ -800,12 +744,12 @@ public class GameService : IGameService
         var oldZ = character.Z;
         
         // 이동 목표 설정
-        character.SetMoveTarget(moveRequest.TargetX, moveRequest.TargetY, moveRequest.TargetZ);
+        character.SetMoveTarget(request.TargetX, request.TargetY, request.TargetZ);
         
         Log.Information("[이동 요청] 세션: {SessionId}, 캐릭터 ID: {CharacterId}, 위치: ({OldX:F2}, {OldY:F2}, {OldZ:F2}) → ({NewX:F2}, {NewY:F2}, {NewZ:F2})",
             context.Session.SessionId, character.ObjectId,
             oldX, oldY, oldZ,
-            moveRequest.TargetX, moveRequest.TargetY, moveRequest.TargetZ);
+            request.TargetX, request.TargetY, request.TargetZ);
         
         await Task.CompletedTask;
     }

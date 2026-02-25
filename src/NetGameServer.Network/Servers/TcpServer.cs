@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 
+using NetGameServer.Common.Packets.Proto;
 using NetGameServer.Network.Sessions;
 
 namespace NetGameServer.Network.Servers;
@@ -94,7 +95,7 @@ public class TcpServer : IDisposable
     /// <summary>
     /// 모든 세션에 패킷 브로드캐스트
     /// </summary>
-    public async Task BroadcastAsync(NetGameServer.Common.Packets.PacketBase packet)
+    public async Task BroadcastAsync(GamePacket packet)
     {
         var sessions = _sessions.Where(s => s.IsConnected).ToList();
         var tasks = sessions.Select(s => s.SendPacketAsync(packet));

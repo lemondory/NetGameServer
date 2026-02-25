@@ -1,9 +1,12 @@
 using System.Buffers;
+using System.Net;
 using System.Net.Sockets;
 using System.Threading.Channels;
+using Google.Protobuf;
 using NetGameServer.Common.Packets;
+using NetGameServer.Common.Packets.Proto;
 using NetGameServer.Network.Processing;
-using static NetGameServer.Common.Packets.PacketPriority;
+using NetGameServer.Network.Security;
 using Serilog;
 
 namespace NetGameServer.Network.Sessions;
@@ -14,32 +17,37 @@ public class GameClientSession : IClientSession, IDisposable
     private readonly TcpClient _tcpClient;
     private readonly NetworkStream _stream;
     private readonly PacketBuffer _receiveBuffer;
-    private readonly Channel<PacketBase> _sendQueue;
+    private readonly Channel<GamePacket> _sendQueue;
     private readonly SemaphoreSlim _sendSemaphore = new(1, 1);
     private readonly ArrayPool<byte> _arrayPool = ArrayPool<byte>.Shared;
     
     private readonly byte[] _readBuffer = new byte[4096];
+    private const int MaxBatchSizeBytes = 64 * 1024; // 64KB
+    private const int MaxBatchCount = 10;
     private bool _disposed = false;
     private Task? _receiveTask;
     private Task? _sendTask;
     
     private PacketProcessor? _packetProcessor;
+    private readonly MaliciousClientTracker? _maliciousTracker;
     private DateTime _lastActivityTime = DateTime.UtcNow;
     
     public string SessionId { get; }
     public bool IsConnected => _tcpClient.Connected && !_disposed;
     public DateTime LastActivityTime => _lastActivityTime;
     
-    public event EventHandler<PacketBase>? PacketReceived;
+    public event EventHandler<GamePacket>? PacketReceived;
     public event EventHandler? Disconnected;
     
-    public GameClientSession(TcpClient tcpClient, PacketProcessor? packetProcessor = null)
+    public GameClientSession(TcpClient tcpClient, PacketProcessor? packetProcessor = null, MaliciousClientTracker? maliciousTracker = null)
     {
         _tcpClient = tcpClient ?? throw new ArgumentNullException(nameof(tcpClient));
         ConfigureTcpClient(_tcpClient);
         _stream = _tcpClient.GetStream();
         _packetProcessor = packetProcessor;
+        _maliciousTracker = maliciousTracker;
         SessionId = Guid.NewGuid().ToString();
+        _maliciousTracker?.RegisterSession(SessionId, _tcpClient.Client.RemoteEndPoint as IPEndPoint);
         _lastActivityTime = DateTime.UtcNow;
         
         _receiveBuffer = new PacketBuffer();
@@ -49,7 +57,7 @@ public class GameClientSession : IClientSession, IDisposable
         {
             FullMode = BoundedChannelFullMode.Wait
         };
-        _sendQueue = Channel.CreateBounded<PacketBase>(sendOptions);
+        _sendQueue = Channel.CreateBounded<GamePacket>(sendOptions);
         
         // 수신/송신 태스크 시작 (네트워크 전용 스레드)
         _receiveTask = Task.Run(ReceiveLoopAsync);
@@ -128,25 +136,31 @@ public class GameClientSession : IClientSession, IDisposable
                 
                 foreach (var packetData in completePackets)
                 {
-                    var packet = PacketFactory.DeserializePacket(packetData);
-                    if (packet != null)
+                    if (!packetData.TryToGamePacket(out var packet) || packet == null)
                     {
-                        // 하트비트 패킷은 활동 시간만 업데이트하고 처리하지 않음
-                        if (packet.PacketId == (ushort)PacketType.Heartbeat)
+                        if (_maliciousTracker != null &&
+                            _maliciousTracker.RecordInvalidPacket(SessionId, _tcpClient.Client.RemoteEndPoint as IPEndPoint, out _))
                         {
-                            _lastActivityTime = DateTime.UtcNow;
-                            continue;
+                            await DisconnectAsync();
+                            return;
                         }
-                        
-                        if (_packetProcessor != null)
-                        {
-                            var priority = PacketPriority.GetPriority((PacketType)packet.PacketId);
-                            _packetProcessor.EnqueuePacket(this, packet, priority);
-                        }
-                        else
-                        {
-                            PacketReceived?.Invoke(this, packet);
-                        }
+                        continue;
+                    }
+
+                    if (packet.PayloadCase == GamePacket.PayloadOneofCase.Heartbeat)
+                    {
+                        _lastActivityTime = DateTime.UtcNow;
+                        continue;
+                    }
+                    
+                    if (_packetProcessor != null)
+                    {
+                        var priority = packet.GetPriority();
+                        _packetProcessor.EnqueuePacket(this, packet, priority);
+                    }
+                    else
+                    {
+                        PacketReceived?.Invoke(this, packet);
                     }
                 }
             }
@@ -176,17 +190,31 @@ public class GameClientSession : IClientSession, IDisposable
         }
     }
     
-    // 송신 루프. 네트워크 스레드에서만 실행됩니다.
+    // 송신 루프. 배치 전송으로 네트워크 효율 향상 (최대 10개 또는 64KB)
     private async Task SendLoopAsync()
     {
+        var batch = new List<GamePacket>(MaxBatchCount);
         try
         {
-            await foreach (var packet in _sendQueue.Reader.ReadAllAsync())
+            while (IsConnected)
             {
-                if (!IsConnected)
-                    break;
-                    
-                await SendPacketInternalAsync(packet);
+                batch.Clear();
+                var first = await _sendQueue.Reader.ReadAsync();
+                batch.Add(first);
+
+                // 추가 패킷 수집 (non-blocking, 최대 10개 또는 64KB)
+                var batchBytes = first.CalculateSize() + sizeof(int);
+                while (batch.Count < MaxBatchCount && batchBytes < MaxBatchSizeBytes &&
+                       _sendQueue.Reader.TryRead(out var packet))
+                {
+                    var len = packet.CalculateSize() + sizeof(int);
+                    if (batchBytes + len > MaxBatchSizeBytes)
+                        break;
+                    batch.Add(packet);
+                    batchBytes += len;
+                }
+
+                await SendBatchInternalAsync(batch);
             }
         }
         catch (SocketException ex)
@@ -209,7 +237,7 @@ public class GameClientSession : IClientSession, IDisposable
     }
     
     // 패킷 전송. 게임 로직 스레드에서도 호출 가능합니다.
-    public async Task SendPacketAsync(PacketBase packet)
+    public async Task SendPacketAsync(GamePacket packet)
     {
         if (!IsConnected)
             return;
@@ -230,28 +258,34 @@ public class GameClientSession : IClientSession, IDisposable
         }
     }
     
-    // 실제 패킷 전송. 네트워크 스레드에서만 실행됩니다.
-    private async Task SendPacketInternalAsync(PacketBase packet)
+    // 배치 전송. 여러 패킷을 [size][payload][size][payload]... 형태로 한 번에 전송
+    private async Task SendBatchInternalAsync(List<GamePacket> batch)
     {
         await _sendSemaphore.WaitAsync();
         try
         {
-            var data = packet.Serialize();
-            var lengthBytes = BitConverter.GetBytes(data.Length);
-            
-            // ArrayPool을 사용해 전송 버퍼 할당
-            var totalLength = lengthBytes.Length + data.Length;
+            var totalLength = 0;
+            foreach (var p in batch)
+                totalLength += sizeof(int) + p.ToByteArray().Length;
+
             var sendBuffer = _arrayPool.Rent(totalLength);
             try
             {
-                Buffer.BlockCopy(lengthBytes, 0, sendBuffer, 0, lengthBytes.Length);
-                Buffer.BlockCopy(data, 0, sendBuffer, lengthBytes.Length, data.Length);
-                
+                var offset = 0;
+                foreach (var packet in batch)
+                {
+                    var data = packet.ToByteArray();
+                    var lengthBytes = BitConverter.GetBytes(data.Length);
+                    Buffer.BlockCopy(lengthBytes, 0, sendBuffer, offset, lengthBytes.Length);
+                    Buffer.BlockCopy(data, 0, sendBuffer, offset + lengthBytes.Length, data.Length);
+                    offset += lengthBytes.Length + data.Length;
+                }
+
                 await _stream.WriteAsync(new ReadOnlyMemory<byte>(sendBuffer, 0, totalLength));
                 await _stream.FlushAsync();
-                
-                Log.Debug("패킷 전송 완료: 세션 {SessionId}, 패킷 ID: {PacketId}, 크기: {Size} bytes", 
-                    SessionId, packet.PacketId, totalLength);
+
+                Log.Debug("배치 전송: 세션 {SessionId}, 패킷 {Count}개, 총 {Size} bytes",
+                    SessionId, batch.Count, totalLength);
             }
             finally
             {
@@ -260,7 +294,7 @@ public class GameClientSession : IClientSession, IDisposable
         }
         catch (SocketException ex)
         {
-            Log.Warning(ex, "세션 {SessionId} 전송 소켓 오류: {SocketErrorCode} - {Message}", 
+            Log.Warning(ex, "세션 {SessionId} 전송 소켓 오류: {SocketErrorCode} - {Message}",
                 SessionId, ex.SocketErrorCode, ex.Message);
             await DisconnectAsync();
         }
@@ -286,6 +320,7 @@ public class GameClientSession : IClientSession, IDisposable
             return;
             
         _disposed = true;
+        _maliciousTracker?.UnregisterSession(SessionId);
         
         try
         {

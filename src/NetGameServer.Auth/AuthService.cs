@@ -1,6 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
-using NetGameServer.Common.Packets;
+using NetGameServer.Common.Packets.Proto;
 
 namespace NetGameServer.Auth;
 
@@ -15,13 +15,13 @@ public class AuthService : IAuthService
     private readonly Dictionary<string, string> _tokens = new(); // token -> username
     private readonly HashSet<string> _activeTokens = new();
     
-    public async Task<LoginResponsePacket> LoginAsync(LoginRequestPacket request)
+    public async Task<LoginResponse> LoginAsync(LoginRequest request)
     {
         await Task.Delay(1); // 비동기 시뮬레이션
         
         if (string.IsNullOrEmpty(request.Username) || string.IsNullOrEmpty(request.Password))
         {
-            return new LoginResponsePacket
+            return new LoginResponse
             {
                 Success = false,
                 Message = "사용자명과 비밀번호를 입력해주세요."
@@ -31,7 +31,7 @@ public class AuthService : IAuthService
         // 사용자 확인
         if (!_users.TryGetValue(request.Username, out var hashedPassword))
         {
-            return new LoginResponsePacket
+            return new LoginResponse
             {
                 Success = false,
                 Message = "사용자명 또는 비밀번호가 올바르지 않습니다."
@@ -42,7 +42,7 @@ public class AuthService : IAuthService
         var inputHash = HashPassword(request.Password);
         if (hashedPassword != inputHash)
         {
-            return new LoginResponsePacket
+            return new LoginResponse
             {
                 Success = false,
                 Message = "사용자명 또는 비밀번호가 올바르지 않습니다."
@@ -54,7 +54,7 @@ public class AuthService : IAuthService
         _tokens[token] = request.Username;
         _activeTokens.Add(token);
         
-        return new LoginResponsePacket
+        return new LoginResponse
         {
             Success = true,
             Message = "로그인 성공",

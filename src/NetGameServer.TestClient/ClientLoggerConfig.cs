@@ -22,15 +22,18 @@ public static class ClientLoggerConfig
             .MinimumLevel.Debug() // 디버그 레벨까지 로그 출력 (패킷 수신 확인용)
             .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
             .Enrich.FromLogContext()
-            .WriteTo.Console(
-                outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}")
-            .WriteTo.File(
+            // 비동기 싱크로 성능 최적화 (메인 스레드 블로킹 최소화)
+            .WriteTo.Async(a => a.Console(
+                outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}"),
+                bufferSize: 10000) // 버퍼 크기: 10,000개 로그
+            .WriteTo.Async(a => a.File(
                 logFile,
                 rollingInterval: RollingInterval.Day,
                 retainedFileCountLimit: 7, // 7일치 로그 보관
                 outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {Message:lj}{NewLine}{Exception}",
                 shared: true,
-                flushToDiskInterval: TimeSpan.FromSeconds(1)) // 1초마다 디스크에 플러시
+                flushToDiskInterval: TimeSpan.FromSeconds(5)), // 5초마다 디스크에 플러시 (비동기이므로 더 길게 설정 가능)
+                bufferSize: 10000) // 버퍼 크기: 10,000개 로그
             .CreateLogger();
     }
 }

@@ -1,4 +1,4 @@
-﻿using System.Net;
+using System.Net;
 using NetGameServer.Auth;
 using NetGameServer.Common.Packets;
 using NetGameServer.Game.Services;
@@ -54,7 +54,7 @@ class Program
             Log.Information("서버가 포트 {Port}에서 실행 중입니다...", port);
             Log.Information("종료하려면 'q'를 입력하세요.");
         
-        // 상태 모니터링
+        // 상태 모니터링 (5초마다)
         _ = Task.Run(async () =>
         {
             while (true)
@@ -62,10 +62,19 @@ class Program
                 await Task.Delay(5000);
                 if (_tcpServer != null)
                 {
-                    Log.Information("[상태] 연결: {ActiveSessions}, 대기 패킷: {QueuedPackets}, 사용 가능 연결: {AvailableConnections}",
+                    var metrics = _tcpServer.GetPacketMetrics();
+                    Log.Information(
+                        "[상태] 연결: {ActiveSessions}, 대기: {QueuedPackets}, 사용가능: {AvailableConnections} | " +
+                        "처리: {TotalProcessed} | 처리시간(avg/max/p95/p99): {ProcAvg:F2}/{ProcMax:F2}/{ProcP95:F2}/{ProcP99:F2}ms | " +
+                        "큐대기(avg/max): {QueueAvg:F2}/{QueueMax:F2}ms | 워커: [{WorkerStats}]",
                         _tcpServer.ActiveSessionCount,
-                        _tcpServer.QueuedPacketCount,
-                        _tcpServer.AvailableConnections);
+                        metrics.QueuedPacketCount,
+                        _tcpServer.AvailableConnections,
+                        metrics.TotalProcessed,
+                        metrics.ProcessingTime.AvgMs, metrics.ProcessingTime.MaxMs,
+                        metrics.ProcessingTime.P95Ms, metrics.ProcessingTime.P99Ms,
+                        metrics.QueueWaitTime.AvgMs, metrics.QueueWaitTime.MaxMs,
+                        string.Join(", ", metrics.WorkerStats.Select(w => $"W{w.WorkerId}:{w.ProcessedCount}")));
                 }
             }
         });

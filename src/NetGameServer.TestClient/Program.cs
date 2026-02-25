@@ -1,5 +1,5 @@
-﻿using System.Net;
-using NetGameServer.Common.Packets;
+using System.Net;
+using NetGameServer.Common.Packets.Proto;
 using NetGameServer.TestClient;
 using Serilog;
 
@@ -142,23 +142,20 @@ class Program
             
             // 2. 로그인
             Log.Information("[시나리오 {ScenarioNumber}] 2. 로그인 시도...", scenarioNumber);
-            var loginRequest = new LoginRequestPacket
+            var loginRequest = new GamePacket
             {
-                Username = "testuser",
-                Password = "testpass"
+                LoginRequest = new LoginRequest { Username = "testuser", Password = "testpass" }
             };
-            
             await client.SendPacketAsync(loginRequest);
             
-            // 로그인 응답 대기 (특정 패킷 타입만 받기)
-            var loginResponse = await client.ReceivePacketAsync(TimeSpan.FromSeconds(5), (ushort)PacketType.LoginResponse);
-            if (loginResponse is LoginResponsePacket response && response.Success)
+            var loginResponse = await client.ReceivePacketAsync(TimeSpan.FromSeconds(5), GamePacket.PayloadOneofCase.LoginResponse);
+            if (loginResponse != null && loginResponse.PayloadCase == GamePacket.PayloadOneofCase.LoginResponse && 
+                loginResponse.LoginResponse.Success)
             {
                 Log.Information("[시나리오 {ScenarioNumber}] 로그인 성공", scenarioNumber);
-                // 인증 토큰 저장 (재연결용)
-                if (!string.IsNullOrEmpty(response.Token))
+                if (loginResponse.LoginResponse.HasToken)
                 {
-                    client.SetAuthToken(response.Token, loginRequest.Username);
+                    client.SetAuthToken(loginResponse.LoginResponse.Token, "testuser");
                 }
             }
             else
@@ -181,13 +178,10 @@ class Program
                 float targetY = 0.0f;
                 float targetZ = random.NextSingle() * 100.0f - 50.0f;
                 
-                var moveRequest = new MoveRequestPacket
+                var moveRequest = new GamePacket
                 {
-                    TargetX = targetX,
-                    TargetY = targetY,
-                    TargetZ = targetZ
+                    MoveRequest = new MoveRequest { TargetX = targetX, TargetY = targetY, TargetZ = targetZ }
                 };
-                
                 await client.SendPacketAsync(moveRequest);
                 Log.Information("[시나리오 {ScenarioNumber}]   이동 {MoveCount}/10: ({OldX:F2}, {OldY:F2}, {OldZ:F2}) → ({NewX:F2}, {NewY:F2}, {NewZ:F2})",
                     scenarioNumber, i + 1, currentX, currentY, currentZ, targetX, targetY, targetZ);
@@ -241,23 +235,20 @@ class Program
             
             // 2. 로그인
             Log.Information("[시나리오 {ScenarioNumber}] 2. 로그인 시도...", scenarioNumber);
-            var loginRequest = new LoginRequestPacket
+            var loginRequest = new GamePacket
             {
-                Username = "testuser",
-                Password = "testpass"
+                LoginRequest = new LoginRequest { Username = "testuser", Password = "testpass" }
             };
-            
             await client.SendPacketAsync(loginRequest);
             
-            // 로그인 응답 대기
-            var loginResponse = await client.ReceivePacketAsync(TimeSpan.FromSeconds(5), (ushort)PacketType.LoginResponse);
-            if (loginResponse is LoginResponsePacket response && response.Success)
+            var loginResponse = await client.ReceivePacketAsync(TimeSpan.FromSeconds(5), GamePacket.PayloadOneofCase.LoginResponse);
+            if (loginResponse != null && loginResponse.PayloadCase == GamePacket.PayloadOneofCase.LoginResponse && 
+                loginResponse.LoginResponse.Success)
             {
                 Log.Information("[시나리오 {ScenarioNumber}] 로그인 성공", scenarioNumber);
-                // 인증 토큰 저장 (재연결용)
-                if (!string.IsNullOrEmpty(response.Token))
+                if (loginResponse.LoginResponse.HasToken)
                 {
-                    client.SetAuthToken(response.Token, loginRequest.Username);
+                    client.SetAuthToken(loginResponse.LoginResponse.Token, "testuser");
                 }
             }
             else
@@ -279,13 +270,10 @@ class Program
                 float targetY = 0.0f;
                 float targetZ = random.NextSingle() * 100.0f - 50.0f;
                 
-                var moveRequest = new MoveRequestPacket
+                var moveRequest = new GamePacket
                 {
-                    TargetX = targetX,
-                    TargetY = targetY,
-                    TargetZ = targetZ
+                    MoveRequest = new MoveRequest { TargetX = targetX, TargetY = targetY, TargetZ = targetZ }
                 };
-                
                 await client.SendPacketAsync(moveRequest);
                 Log.Information("[시나리오 {ScenarioNumber}]   이동 {MoveCount}/5: ({OldX:F2}, {OldY:F2}, {OldZ:F2}) → ({NewX:F2}, {NewY:F2}, {NewZ:F2})",
                     scenarioNumber, i + 1, currentX, currentY, currentZ, targetX, targetY, targetZ);
@@ -323,13 +311,10 @@ class Program
                 float targetY = 0.0f;
                 float targetZ = random.NextSingle() * 100.0f - 50.0f;
                 
-                var moveRequest = new MoveRequestPacket
+                var moveRequest = new GamePacket
                 {
-                    TargetX = targetX,
-                    TargetY = targetY,
-                    TargetZ = targetZ
+                    MoveRequest = new MoveRequest { TargetX = targetX, TargetY = targetY, TargetZ = targetZ }
                 };
-                
                 await client.SendPacketAsync(moveRequest);
                 Log.Information("[시나리오 {ScenarioNumber}]   이동 {MoveCount}/5: ({OldX:F2}, {OldY:F2}, {OldZ:F2}) → ({NewX:F2}, {NewY:F2}, {NewZ:F2})",
                     scenarioNumber, i + 1, currentX, currentY, currentZ, targetX, targetY, targetZ);

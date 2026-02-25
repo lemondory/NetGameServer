@@ -1,5 +1,7 @@
 using System.Net.Sockets;
+using Google.Protobuf;
 using NetGameServer.Common.Packets;
+using NetGameServer.Common.Packets.Proto;
 
 namespace NetGameServer.Network.Sessions;
 
@@ -17,7 +19,7 @@ public class ClientSession : IClientSession, IDisposable
     public string SessionId { get; }
     public bool IsConnected => _tcpClient.Connected && !_disposed;
     
-    public event EventHandler<PacketBase>? PacketReceived;
+    public event EventHandler<GamePacket>? PacketReceived;
     public event EventHandler? Disconnected;
     
     public ClientSession(TcpClient tcpClient)
@@ -83,22 +85,21 @@ public class ClientSession : IClientSession, IDisposable
             _receiveBuffer.RemoveRange(0, totalSize);
             
             // 패킷 역직렬화
-            var packet = PacketFactory.DeserializePacket(packetData);
-            if (packet != null)
+            if (packetData.TryToGamePacket(out var packet) && packet != null)
             {
                 PacketReceived?.Invoke(this, packet);
             }
         }
     }
     
-    public async Task SendPacketAsync(PacketBase packet)
+    public async Task SendPacketAsync(GamePacket packet)
     {
         if (!IsConnected)
             return;
             
         try
         {
-            var data = packet.Serialize();
+            var data = packet.ToByteArray();
             var lengthBytes = BitConverter.GetBytes(data.Length);
             
             // 패킷 크기 + 패킷 데이터 전송

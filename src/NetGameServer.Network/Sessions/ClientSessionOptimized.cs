@@ -2,7 +2,9 @@ using System.Buffers;
 using System.Collections.Concurrent;
 using System.Net.Sockets;
 using System.Threading.Channels;
+using Google.Protobuf;
 using NetGameServer.Common.Packets;
+using NetGameServer.Common.Packets.Proto;
 
 namespace NetGameServer.Network.Sessions;
 
@@ -14,7 +16,7 @@ public class ClientSessionOptimized : IClientSession, IDisposable
     private readonly TcpClient _tcpClient;
     private readonly NetworkStream _stream;
     private readonly ArrayPool<byte> _arrayPool = ArrayPool<byte>.Shared;
-    private readonly Channel<PacketBase> _sendQueue;
+    private readonly Channel<GamePacket> _sendQueue;
     private readonly SemaphoreSlim _sendSemaphore = new(1, 1);
     
     // 메모리 효율적인 버퍼 관리
@@ -30,7 +32,7 @@ public class ClientSessionOptimized : IClientSession, IDisposable
     public string SessionId { get; }
     public bool IsConnected => _tcpClient.Connected && !_disposed;
     
-    public event EventHandler<PacketBase>? PacketReceived;
+    public event EventHandler<GamePacket>? PacketReceived;
     public event EventHandler? Disconnected;
     
     public ClientSessionOptimized(TcpClient tcpClient)
@@ -44,7 +46,7 @@ public class ClientSessionOptimized : IClientSession, IDisposable
         {
             FullMode = BoundedChannelFullMode.Wait
         };
-        _sendQueue = Channel.CreateBounded<PacketBase>(options);
+        _sendQueue = Channel.CreateBounded<GamePacket>(options);
         
         // 버퍼는 ArrayPool에서 할당
         _receiveBuffer = _arrayPool.Rent(InitialBufferSize);
@@ -120,8 +122,7 @@ public class ClientSessionOptimized : IClientSession, IDisposable
             _receiveBufferOffset -= totalSize;
             
             // 패킷 역직렬화 및 이벤트 발생
-            var packet = PacketFactory.DeserializePacket(packetData);
-            if (packet != null)
+            if (packetData.TryToGamePacket(out var packet) && packet != null)
             {
                 // 비동기로 처리하여 블로킹 방지
                 _ = Task.Run(() => PacketReceived?.Invoke(this, packet));
@@ -159,7 +160,7 @@ public class ClientSessionOptimized : IClientSession, IDisposable
         }
     }
     
-    public async Task SendPacketAsync(PacketBase packet)
+    public async Task SendPacketAsync(GamePacket packet)
     {
         if (!IsConnected)
             return;
@@ -175,12 +176,12 @@ public class ClientSessionOptimized : IClientSession, IDisposable
         }
     }
     
-    private async Task SendPacketInternalAsync(PacketBase packet)
+    private async Task SendPacketInternalAsync(GamePacket packet)
     {
         await _sendSemaphore.WaitAsync();
         try
         {
-            var data = packet.Serialize();
+            var data = packet.ToByteArray();
             var lengthBytes = BitConverter.GetBytes(data.Length);
             
             // 한 번에 전송 (시스템 콜 최소화)

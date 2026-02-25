@@ -1,7 +1,9 @@
 using System.Net;
 using System.Net.Sockets;
+using NetGameServer.Common.Packets.Proto;
 using NetGameServer.Network.Management;
 using NetGameServer.Network.Processing;
+using NetGameServer.Network.Security;
 using NetGameServer.Network.Sessions;
 using Serilog;
 
@@ -16,6 +18,7 @@ public class GameTcpServer : IDisposable
     private readonly ConnectionManager _connectionManager;
     private readonly PacketProcessor _packetProcessor;
     private readonly HeartbeatManager _heartbeatManager;
+    private readonly MaliciousClientTracker _maliciousTracker;
     private bool _isRunning = false;
     private CancellationTokenSource? _cancellationTokenSource;
     
@@ -35,10 +38,12 @@ public class GameTcpServer : IDisposable
         int maxConnections = 10000, 
         int packetWorkerCount = 4,
         TimeSpan? heartbeatInterval = null,
-        TimeSpan? heartbeatTimeout = null)
+        TimeSpan? heartbeatTimeout = null,
+        MaliciousClientTracker? maliciousTracker = null)
     {
         _connectionManager = new ConnectionManager(maxConnections);
         _packetProcessor = new PacketProcessor(packetWorkerCount);
+        _maliciousTracker = maliciousTracker ?? new MaliciousClientTracker(invalidPacketThreshold: 10);
         _packetProcessor.PacketHandler = OnPacketReceived;
         
         // 하트비트 관리자 초기화
@@ -104,6 +109,7 @@ public class GameTcpServer : IDisposable
         _cancellationTokenSource?.Cancel();
         _listener?.Stop();
         
+        _maliciousTracker.SaveBlockedList();
         _connectionManager.Dispose();
         _packetProcessor.Dispose();
         _heartbeatManager.Dispose();
@@ -153,8 +159,16 @@ public class GameTcpServer : IDisposable
         GameClientSession? session = null;
         try
         {
+            var remoteEndPoint = tcpClient.Client.RemoteEndPoint as IPEndPoint;
+            if (_maliciousTracker.IsBlocked(remoteEndPoint))
+            {
+                Log.Warning("차단된 IP 연결 시도 거부: {Ip}", remoteEndPoint?.Address);
+                tcpClient.Close();
+                return;
+            }
+
             // 패킷 프로세서를 사용하는 게임 세션 생성
-            session = new GameClientSession(tcpClient, _packetProcessor);
+            session = new GameClientSession(tcpClient, _packetProcessor, _maliciousTracker);
             
             // 연결 관리자에 추가
             if (!_connectionManager.TryAddSession(session))
@@ -205,13 +219,13 @@ public class GameTcpServer : IDisposable
     {
         // 기본 구현 - 게임 로직에서 PacketHandler를 설정하여 오버라이드
         Log.Debug("패킷 수신: 세션 {SessionId}, 타입: {PacketId}", 
-            context.Session.SessionId, context.Packet.PacketId);
+            context.Session.SessionId, context.Packet.PayloadCase);
     }
     
     /// <summary>
     /// 모든 세션에 패킷 브로드캐스트
     /// </summary>
-    public async Task BroadcastAsync(NetGameServer.Common.Packets.PacketBase packet)
+    public async Task BroadcastAsync(GamePacket packet)
     {
         var sessions = _connectionManager.GetAllSessions().ToList();
         var tasks = sessions.Select(s => s.SendPacketAsync(packet));
@@ -221,7 +235,7 @@ public class GameTcpServer : IDisposable
     /// <summary>
     /// 특정 세션에 패킷 전송
     /// </summary>
-    public async Task SendToSessionAsync(string sessionId, NetGameServer.Common.Packets.PacketBase packet)
+    public async Task SendToSessionAsync(string sessionId, GamePacket packet)
     {
         var session = _connectionManager.GetSession(sessionId);
         if (session != null && session.IsConnected)
@@ -233,6 +247,11 @@ public class GameTcpServer : IDisposable
     public int ActiveSessionCount => _connectionManager.ActiveSessionCount;
     public int AvailableConnections => _connectionManager.AvailableConnections;
     public int QueuedPacketCount => _packetProcessor.QueuedPacketCount;
+
+    /// <summary>
+    /// 패킷 처리 성능 통계 (평균/최대/P95/P99, 큐 대기, 워커별 처리량)
+    /// </summary>
+    public PacketProcessorMetrics GetPacketMetrics() => _packetProcessor.GetMetrics();
     
     public void Dispose()
     {

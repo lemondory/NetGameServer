@@ -1,0 +1,105 @@
+syntax = "proto3";
+
+option csharp_namespace = "NetGameServer.Common.Packets.Proto";
+
+package netgameserver.packets;
+
+// ============================================
+// 표준 Protobuf oneof 패턴: 단일 루트 메시지
+// ============================================
+
+// 게임 패킷 루트 메시지 (표준 Protobuf oneof 패턴)
+message GamePacket {
+  oneof payload {
+    LoginRequest login_request = 1;
+    LoginResponse login_response = 2;
+    ReconnectRequest reconnect_request = 3;
+    ReconnectResponse reconnect_response = 4;
+    MoveRequest move_request = 5;
+    ObjectSpawn object_spawn = 6;
+    ObjectDespawn object_despawn = 7;
+    ObjectUpdate object_update = 8;
+    ObjectSnapshot object_snapshot = 9;
+    Heartbeat heartbeat = 10;
+  }
+}
+
+// 하트비트 (연결 유지)
+message Heartbeat {}
+
+// 로그인 요청
+message LoginRequest {
+  string username = 1;
+  string password = 2;
+}
+
+// 로그인 응답
+message LoginResponse {
+  bool success = 1;
+  string message = 2;
+  optional string token = 3;
+}
+
+// 재연결 요청
+message ReconnectRequest {
+  string token = 1;
+  string username = 2;
+}
+
+// 재연결 응답
+message ReconnectResponse {
+  bool success = 1;
+  string message = 2;
+  optional string session_id = 3;
+}
+
+// 이동 요청
+message MoveRequest {
+  float target_x = 1;
+  float target_y = 2;
+  float target_z = 3;
+}
+
+// 오브젝트 스폰
+message ObjectSpawn {
+  uint32 object_id = 1;
+  uint32 object_type = 2;
+  float x = 3;
+  float y = 4;
+  float z = 5;
+  int32 hp = 6;
+  int32 max_hp = 7;
+  int32 level = 8;
+}
+
+// 오브젝트 제거
+message ObjectDespawn {
+  uint32 object_id = 1;
+}
+
+// 오브젝트 상태 업데이트 (Delta - optional 필드만 변경된 값 포함)
+message ObjectUpdate {
+  uint32 object_id = 1;
+  optional float x = 2;
+  optional float y = 3;
+  optional float z = 4;
+  optional int32 hp = 5;
+  optional int32 level = 6;
+}
+
+// 오브젝트 데이터 (스냅샷용)
+message ObjectData {
+  uint32 object_id = 1;
+  uint32 object_type = 2;
+  float x = 3;
+  float y = 4;
+  float z = 5;
+  int32 hp = 6;
+  int32 max_hp = 7;
+  int32 level = 8;
+}
+
+// 오브젝트 전체 스냅샷
+message ObjectSnapshot {
+  repeated ObjectData objects = 1;
+}
